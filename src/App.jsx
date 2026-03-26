@@ -1,4 +1,39 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { initializeApp } from "firebase/app";
+import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
+import { getFirestore, collection, doc, getDocs, setDoc, deleteDoc } from "firebase/firestore";
+
+// ── Firebase ──────────────────────────────────────────────────────────────────
+const firebaseConfig = {
+  apiKey: "AIzaSyA96YT4rhp9wqISat26T6xGAMBNaArX3wQ",
+  authDomain: "clip-editor-15cd0.firebaseapp.com",
+  projectId: "clip-editor-15cd0",
+  storageBucket: "clip-editor-15cd0.firebasestorage.app",
+  messagingSenderId: "710540979866",
+  appId: "1:710540979866:web:135daa56a291069bc8f923"
+};
+const fbApp   = initializeApp(firebaseConfig);
+const auth    = getAuth(fbApp);
+const db      = getFirestore(fbApp);
+const gProvider = new GoogleAuthProvider();
+
+const signIn  = () => signInWithPopup(auth, gProvider);
+const logOut  = () => signOut(auth);
+
+// Firestore helpers
+const projCol = (uid) => collection(db, "users", uid, "projects");
+const projDoc = (uid, id) => doc(db, "users", uid, "projects", String(id));
+
+const fsLoadProjects = async (uid) => {
+  const snap = await getDocs(projCol(uid));
+  return snap.docs.map(d => d.data());
+};
+const fsSaveProject = async (uid, p) => {
+  await setDoc(projDoc(uid, p.id), p);
+};
+const fsDeleteProject = async (uid, id) => {
+  await deleteDoc(projDoc(uid, id));
+};
 
 // Display size (CSS pixels) and internal render size (2x for crisp text)
 const PW = 270, PH = 480;
@@ -36,8 +71,6 @@ const dbDel = async (id) => {
     t.oncomplete = res; t.onerror = () => rej(t.error);
   });
 };
-const saveProjects = ps => { try { localStorage.setItem("ce_projects", JSON.stringify(ps)); } catch {} };
-const loadProjects = () => { try { return JSON.parse(localStorage.getItem("ce_projects") || "[]"); } catch { return []; } };
 
 // ── CSS ───────────────────────────────────────────────────────────────────────
 const css = `
@@ -94,8 +127,10 @@ const keepSegments = (cuts, dur) => {
 };
 
 export default function App() {
+  const [user, setUser]               = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
   const [page, setPage]               = useState("dash");
-  const [projects, setProjects]       = useState(() => loadProjects());
+  const [projects, setProjects]       = useState([]);
   const [projName, setProjName]       = useState("");
   const [modal, setModal]             = useState(false);
   const [modalStep, setModalStep]     = useState(1); // 1=name, 2=facecam question
@@ -180,21 +215,41 @@ export default function App() {
   useEffect(() => { cutsRef.current = cuts; },               [cuts]);
   useEffect(() => { vidDurRef.current = vidDur; },           [vidDur]);
 
-  // ── Persist ───────────────────────────────────────────────────────────────────
-  useEffect(() => { saveProjects(projects); }, [projects]);
+  // ── Auth watcher + load projects from Firestore ───────────────────────────────
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, async (u) => {
+      setUser(u);
+      if (u) {
+        try {
+          const ps = await fsLoadProjects(u.uid);
+          setProjects(ps.sort((a,b) => b.id - a.id));
+        } catch (err) { console.error(err); }
+      } else {
+        setProjects([]);
+      }
+      setAuthLoading(false);
+    });
+    return unsub;
+  }, []);
   useEffect(() => { if (vidRef.current) vidRef.current.volume = volume; }, [volume]);
 
   const saveProjectState = useCallback((updates = {}) => {
-    if (!activeProj) return;
-    setProjects(prev => prev.map(p => p.id === activeProj.id ? { ...p, ...updates } : p));
-  }, [activeProj]);
+    if (!activeProj || !user) return;
+    setProjects(prev => {
+      const next = prev.map(p => p.id === activeProj.id ? { ...p, ...updates } : p);
+      const updated = next.find(p => p.id === activeProj.id);
+      if (updated) fsSaveProject(user.uid, updated).catch(console.error);
+      return next;
+    });
+  }, [activeProj, user]);
 
   // ── Project ───────────────────────────────────────────────────────────────────
   const createProject = () => {
-    if (!projName.trim()) return;
+    if (!projName.trim() || !user) return;
     const p = { id: Date.now(), name: projName.trim(), date: new Date().toLocaleDateString(), hasVideo: false, hasFacecam };
-    hasFacecamRef.current = hasFacecam; // sync ref immediately — don't wait for useEffect
+    hasFacecamRef.current = hasFacecam;
     clipXPctRef.current = 50;
+    fsSaveProject(user.uid, p).catch(console.error);
     setProjects(prev => [p, ...prev]);
     setActiveProj(p); setModal(false); setModalStep(1); setProjName("");
     setClipXPct(50);
@@ -206,6 +261,7 @@ export default function App() {
   const deleteProject = async (id, e) => {
     e.stopPropagation();
     await dbDel(id).catch(() => {});
+    if (user) await fsDeleteProject(user.uid, id).catch(console.error);
     setProjects(prev => prev.filter(p => p.id !== id));
   };
 
@@ -700,6 +756,29 @@ export default function App() {
   const filtered = projects.filter(p => p.name.toLowerCase().includes(search.toLowerCase()));
   const mergedCuts = mergeCuts(cuts);
 
+  // ══ AUTH LOADING ═════════════════════════════════════════════════════════════
+  if (authLoading) return (
+    <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",background:"#0a0a0a",color:"#333",fontFamily:"DM Mono, monospace",fontSize:12}}>
+      <style>{css}</style>
+      Loading...
+    </div>
+  );
+
+  // ══ LOGIN SCREEN ══════════════════════════════════════════════════════════════
+  if (!user) return (
+    <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",height:"100vh",background:"#0a0a0a",color:"#d0d0d0",fontFamily:"DM Sans, sans-serif"}}>
+      <style>{css}</style>
+      <div style={{fontSize:32,marginBottom:16}}>✂️</div>
+      <h1 style={{fontSize:24,fontWeight:700,color:"#e0e0e0",marginBottom:8}}>Clip Editor</h1>
+      <p style={{fontSize:13,color:"#333",marginBottom:36}}>Sign in to access your projects from any device</p>
+      <button onClick={signIn}
+        style={{display:"flex",alignItems:"center",gap:12,background:"#fff",color:"#000",border:"none",borderRadius:10,padding:"12px 24px",fontSize:14,fontWeight:600,cursor:"pointer"}}>
+        <img src="https://www.google.com/favicon.ico" width={18} height={18} alt="Google"/>
+        Sign in with Google
+      </button>
+    </div>
+  );
+
   // ══ DASHBOARD ════════════════════════════════════════════════════════════════
   if (page === "dash") return (
     <div style={{display:"flex",height:"100vh",background:"#0a0a0a",color:"#d0d0d0",fontFamily:"DM Sans, sans-serif",overflow:"hidden"}}>
@@ -712,7 +791,12 @@ export default function App() {
             style={{width:36,height:36,borderRadius:8,border:"none",background:label==="Home"?"#1a1a1a":"transparent",cursor:"pointer",fontSize:16}}>{icon}</button>
         ))}
         <div style={{flex:1}}/>
-        <div style={{width:28,height:28,borderRadius:"50%",background:"#2a2a2a",display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,color:"#666"}}>M</div>
+        <img src={user.photoURL||""} referrerPolicy="no-referrer" width={28} height={28}
+          style={{borderRadius:"50%",border:"1px solid #2a2a2a",cursor:"pointer"}} title={user.displayName||user.email}/>
+        <button onClick={logOut} title="Sign out" className="icon-btn"
+          style={{width:36,height:36,borderRadius:8,border:"none",background:"transparent",cursor:"pointer",fontSize:14}}>
+          🚪
+        </button>
       </div>
       {/* Main */}
       <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
@@ -832,7 +916,7 @@ export default function App() {
         <button onClick={()=>setPage("dash")} style={{background:"transparent",border:"none",color:"#444",cursor:"pointer",fontSize:18,lineHeight:1,padding:"2px 6px"}}>←</button>
         <span style={{fontWeight:600,fontSize:13,color:"#aaa"}}>{activeProj?.name}</span>
         {loadingProj&&<span style={{fontSize:11,color:"#333",fontFamily:"DM Mono, monospace"}}>loading...</span>}
-        <div style={{marginLeft:"auto",display:"flex",gap:5}}>
+        <div style={{marginLeft:"auto",display:"flex",gap:5,alignItems:"center"}}>
           {["Upload","Facecam & Trim","Caption","Export"].map((s,i)=>(
             <div key={i} onClick={()=>videoSrc&&setStep(i+1)}
               style={{padding:"4px 12px",borderRadius:20,fontSize:11,fontWeight:600,cursor:videoSrc?"pointer":"default",fontFamily:"DM Mono, monospace",
