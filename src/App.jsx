@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 
-const PW = 270, PH = 480, FC_FRAC = 0.44;
+const PW = 1080, PH = 1920, FC_FRAC = 0.44;
+const DW = 270, DH = 480;
 
 const css = `
   @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap');
@@ -329,7 +330,7 @@ export default function App() {
       const mime = MediaRecorder.isTypeSupported("video/webm;codecs=vp9,opus")
         ? "video/webm;codecs=vp9,opus" : "video/webm";
       const stream = new MediaStream([...vs.getVideoTracks(), ...adstRef.current.stream.getAudioTracks()]);
-      const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 6_000_000 });
+      const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 16_000_000 });
       rec.ondataavailable = e => { if (e.data.size > 0) chunks.current.push(e.data); };
       rec.onstop = () => {
         setExportUrl(URL.createObjectURL(new Blob(chunks.current, { type: mime })));
@@ -551,13 +552,13 @@ export default function App() {
             The video is always visible to the browser so it never gets suspended.
             The canvas sits on top and draws the formatted output.
           */}
-          <div style={{ position: "relative", width: PW, height: videoSrc ? PH : 0 }}>
+          <div style={{ position: "relative", width: DW, height: videoSrc ? DH : 0 }}>
             {/* Video — same size as canvas, visible to browser, hidden behind canvas */}
             <video ref={vidRef} muted loop playsInline
-              style={{ position: "absolute", top: 0, left: 0, width: PW, height: PH, objectFit: "cover", borderRadius: 16, zIndex: 0 }} />
+              style={{ position: "absolute", top: 0, left: 0, width: DW, height: DH, objectFit: "cover", borderRadius: 16, zIndex: 0 }} />
             {/* Canvas on top — draws formatted TikTok layout */}
             <canvas ref={prevCanRef} width={PW} height={PH}
-              style={{ position: "absolute", top: 0, left: 0, borderRadius: 16, border: "1px solid #141414", boxShadow: "0 0 40px rgba(0,0,0,.8)", zIndex: 1 }} />
+              style={{ position: "absolute", top: 0, left: 0, width: DW, height: DH, borderRadius: 16, border: "1px solid #141414", boxShadow: "0 0 40px rgba(0,0,0,.8)", zIndex: 1 }} />
           </div>
 
           {!videoSrc && (
