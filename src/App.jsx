@@ -40,25 +40,23 @@ export default function App() {
   const [exporting, setExporting]   = useState(false);
   const [exportUrl, setExportUrl]   = useState(null);
   const [isPlaying, setIsPlaying]   = useState(false);
+  const [converting, setConverting] = useState(false);
+  const [mp4Url, setMp4Url]         = useState(null);
 
-  // The ONE video element lives in the right panel BEHIND the canvas.
-  // It's always on-screen so the browser never suspends it.
   const vidRef     = useRef(null);
-  const selVidRef  = useRef(null);   // step-2 visible video for drag
-  const selCanRef  = useRef(null);   // overlay canvas on step-2 video
-  const prevCanRef = useRef(null);   // preview canvas (on top of vidRef)
+  const selVidRef  = useRef(null);
+  const selCanRef  = useRef(null);
+  const prevCanRef = useRef(null);
   const fileRef    = useRef(null);
   const rafRef     = useRef(null);
   const chunks     = useRef([]);
   const acRef      = useRef(null);
   const adstRef    = useRef(null);
 
-  // All drag state as refs — no stale closures
   const draggingRef = useRef(false);
   const anchorRef   = useRef(null);
   const boxRef      = useRef(null);
 
-  // Latest values for RAF without re-renders
   const fcRectRef  = useRef(null);
   const captionRef = useRef("");
   const curSubRef  = useRef("");
@@ -79,6 +77,7 @@ export default function App() {
   const resetEditor = () => {
     setStep(1); setVideoSrc(null); setFcRect(null); setFcConfirmed(false);
     setCaption(""); setSegs([]); setExportUrl(null); setIsPlaying(false);
+    setMp4Url(null);
     curSubRef.current = ""; fcRectRef.current = null; captionRef.current = "";
     acRef.current = null; adstRef.current = null;
   };
@@ -87,7 +86,6 @@ export default function App() {
   const handleFile = f => {
     if (!f?.type.startsWith("video/")) return;
     const url = URL.createObjectURL(f);
-    // Set src on the video element directly — don't wait for React re-render
     const v = vidRef.current;
     if (v) {
       v.src = url;
@@ -96,7 +94,7 @@ export default function App() {
     }
     setVideoSrc(url);
     setFcRect(null); setFcConfirmed(false);
-    setCaption(""); setSegs([]); setExportUrl(null);
+    setCaption(""); setSegs([]); setExportUrl(null); setMp4Url(null);
     setStep(2);
   };
 
@@ -119,7 +117,6 @@ export default function App() {
       const canvas = prevCanRef.current;
       const v = vidRef.current;
       if (!canvas || !v) return;
-      // Only draw if video has frame data
       if (v.readyState < 2) return;
 
       const ctx = canvas.getContext("2d");
@@ -132,13 +129,11 @@ export default function App() {
       ctx.fillStyle = "#000";
       ctx.fillRect(0, 0, W, H);
 
-      // ── Bottom: gameplay — cover fill ─────────────────────────────────────────
       const gsc = Math.max(W / vw, mainH / vh);
       const gw = vw * gsc, gh = vh * gsc;
       const gx = (W - gw) / 2, gy = fcH + (mainH - gh) / 2;
       ctx.drawImage(v, gx, gy, gw, gh);
 
-      // ── Top: facecam — cover fill selected region ─────────────────────────────
       const fc = fcRectRef.current;
       if (fc && fc.w > 4 && fc.h > 4) {
         const fsc = Math.max(W / fc.w, fcH / fc.h);
@@ -155,11 +150,9 @@ export default function App() {
         ctx.textAlign = "left";
       }
 
-      // ── Divider ───────────────────────────────────────────────────────────────
       ctx.fillStyle = "#000";
       ctx.fillRect(0, fcH - 1, W, 2);
 
-      // ── Bold caption ──────────────────────────────────────────────────────────
       const cap = captionRef.current;
       if (cap) {
         const fs = Math.round(W * 0.065);
@@ -175,7 +168,6 @@ export default function App() {
         ctx.restore();
       }
 
-      // ── Subtitle ──────────────────────────────────────────────────────────────
       const sub = curSubRef.current;
       if (sub) {
         const fs = Math.round(W * 0.045);
@@ -315,7 +307,7 @@ export default function App() {
   const doExport = async () => {
     const canvas = prevCanRef.current, video = vidRef.current;
     if (!canvas || !video) return;
-    setExporting(true); setExportUrl(null); chunks.current = [];
+    setExporting(true); setExportUrl(null); setMp4Url(null); chunks.current = [];
     try {
       video.loop = false; video.pause(); video.currentTime = 0;
       await new Promise(r => { video.onseeked = r; setTimeout(r, 800); });
@@ -344,6 +336,30 @@ export default function App() {
       console.error(err); setExporting(false);
       alert("Export failed: " + err.message);
     }
+  };
+
+  // ── Convert to MP4 ────────────────────────────────────────────────────────────
+  const convertToMp4 = async () => {
+    if (!exportUrl) return;
+    setConverting(true); setMp4Url(null);
+    try {
+      const { FFmpeg } = await import('https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/esm/index.js');
+      const { fetchFile, toBlobURL } = await import('https://unpkg.com/@ffmpeg/util@0.12.1/dist/esm/index.js');
+      const ffmpeg = new FFmpeg();
+      const base = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
+      await ffmpeg.load({
+        coreURL: await toBlobURL(`${base}/ffmpeg-core.js`, 'text/javascript'),
+        wasmURL: await toBlobURL(`${base}/ffmpeg-core.wasm`, 'application/wasm'),
+      });
+      await ffmpeg.writeFile('input.webm', await fetchFile(exportUrl));
+      await ffmpeg.exec(['-i', 'input.webm', '-c:v', 'libx264', '-crf', '18', '-preset', 'fast', 'output.mp4']);
+      const data = await ffmpeg.readFile('output.mp4');
+      setMp4Url(URL.createObjectURL(new Blob([data.buffer], { type: 'video/mp4' })));
+    } catch (err) {
+      console.error(err);
+      alert('Conversion failed: ' + err.message);
+    }
+    setConverting(false);
   };
 
   // ── Styles ────────────────────────────────────────────────────────────────────
@@ -531,11 +547,25 @@ export default function App() {
               {exportUrl && (
                 <div style={{ ...T.card, border: "1px solid #1a3a1a", background: "#0a160a" }}>
                   <div style={{ color: "#4a8a4a", fontWeight: 700, marginBottom: 18, fontFamily: "DM Mono, monospace" }}>✓ Export complete</div>
-                  <a href={exportUrl} download="tiktok-clip.webm"
-                    style={{ ...T.btnPrimary, background: "#2a5a2a", color: "#a8e8a8", display: "inline-block", textDecoration: "none", marginRight: 10, padding: "10px 22px" }}>
-                    ⬇ Download .webm
-                  </a>
-                  <button onClick={doExport} className="btn-ghost" style={T.btnGhost}>Re-export</button>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginBottom: 10 }}>
+                    <a href={exportUrl} download="tiktok-clip.webm"
+                      style={{ ...T.btnPrimary, background: "#2a5a2a", color: "#a8e8a8", display: "inline-block", textDecoration: "none", padding: "10px 22px" }}>
+                      ⬇ Download .webm
+                    </a>
+                    <button onClick={doExport} className="btn-ghost" style={T.btnGhost}>Re-export</button>
+                  </div>
+                  {!mp4Url && (
+                    <button onClick={convertToMp4} disabled={converting} className="btn-ghost"
+                      style={{ ...T.btnGhost, background: converting ? "#0d0d0d" : "#0a0a1a", color: converting ? "#333" : "#6a6aff", border: "1px solid #2a2a6a", width: "100%" }}>
+                      {converting ? "⏳ Converting to MP4... (may take a minute)" : "🎬 Convert to MP4"}
+                    </button>
+                  )}
+                  {mp4Url && (
+                    <a href={mp4Url} download="tiktok-clip.mp4"
+                      style={{ ...T.btnPrimary, background: "#1a1a6a", color: "#a8a8ff", display: "inline-block", textDecoration: "none", padding: "10px 22px", width: "100%", textAlign: "center" }}>
+                      ⬇ Download .mp4
+                    </a>
+                  )}
                 </div>
               )}
               <button className="btn-ghost" onClick={() => setStep(3)} style={{ ...T.btnGhost, marginTop: 18 }}>← Back</button>
@@ -547,16 +577,9 @@ export default function App() {
         <div style={{ width: 320, flexShrink: 0, background: "#060606", padding: "22px 20px", display: "flex", flexDirection: "column", alignItems: "center", overflowY: "auto" }}>
           <div style={{ fontSize: 10, fontWeight: 700, color: "#1e1e1e", letterSpacing: "0.16em", fontFamily: "DM Mono, monospace", marginBottom: 18 }}>PREVIEW</div>
 
-          {/*
-            Stack: video BEHIND canvas using position:relative container.
-            The video is always visible to the browser so it never gets suspended.
-            The canvas sits on top and draws the formatted output.
-          */}
           <div style={{ position: "relative", width: DW, height: videoSrc ? DH : 0 }}>
-            {/* Video — same size as canvas, visible to browser, hidden behind canvas */}
             <video ref={vidRef} muted loop playsInline
               style={{ position: "absolute", top: 0, left: 0, width: DW, height: DH, objectFit: "cover", borderRadius: 16, zIndex: 0 }} />
-            {/* Canvas on top — draws formatted TikTok layout */}
             <canvas ref={prevCanRef} width={PW} height={PH}
               style={{ position: "absolute", top: 0, left: 0, width: DW, height: DH, borderRadius: 16, border: "1px solid #141414", boxShadow: "0 0 40px rgba(0,0,0,.8)", zIndex: 1 }} />
           </div>
